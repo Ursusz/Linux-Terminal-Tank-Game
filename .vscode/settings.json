@@ -1,8 +1,0 @@
-{
-  "files.associations": {
-    "mman.h": "c",
-    "stdio.h": "c",
-    "stdlib.h": "c",
-    "shared_defs.h": "c"
-  }
-}
