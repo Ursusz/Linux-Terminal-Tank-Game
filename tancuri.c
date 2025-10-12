@@ -31,9 +31,10 @@ struct{
 } player_stats = {-1};
 
 int current_player = -1;
-bool creator_left = 0;
 volatile sig_atomic_t terminate_flag = 0;
 bool player_won = false;
+
+shared_matrix_t *global_shm_ptr = NULL;
 
 void initializare_semafoare(shared_matrix_t *shm_ptr){
   for (int i = 0; i < MATRIX_SIZE; i++){
@@ -300,6 +301,12 @@ int handle_input(int key, shared_matrix_t* shm_ptr){
   if (key == player_binds.quit){
     if (current_player == 0){
       shm_ptr->creator_quit = 1;
+    }else{
+      shm_ptr->plyr2 = ' ';
+      shm_ptr->plyr2HP = 100;
+      curs_set(1);
+      endwin();
+      exit(EXIT_SUCCESS);
     }
   }
   if (key == player_binds.up){
@@ -321,8 +328,15 @@ int handle_input(int key, shared_matrix_t* shm_ptr){
 }
 
 void signal_handler(int signum){
-  if (signum == SIGINT && current_player == 0){
-    terminate_flag = 1;
+  if (signum == SIGINT) {
+    if (current_player == 0) {
+      terminate_flag = 1;
+      if (global_shm_ptr != NULL) {
+        global_shm_ptr->creator_quit = 1;
+      }
+    } else if (current_player == 1) {
+      terminate_flag = 1;
+    }
   }
 }
 
@@ -349,10 +363,17 @@ int main(int argc, char* argv[]){
       exit(EXIT_FAILURE);
     }
 
-    // creez zoma mem partajata -> 0666 permisiuni (Ignorat, owner, grup, altii) -> 6 (citire 4, scriere 2, executare 0)
-    fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    fd = shm_open(SHM_NAME, O_RDWR, 0666);
+    if (fd != -1) {
+      close(fd);
+      fprintf(stderr, "Eroare: Un joc este deja in curs! Un alt proces creator ruleaza deja.\n");
+      exit(EXIT_FAILURE);
+    }
+
+    // creez zona mem partajata -> 0666 permisiuni (Ignorat, owner, grup, altii) -> 6 (citire 4, scriere 2, executare 0)
+    fd = shm_open(SHM_NAME, O_CREAT | O_EXCL | O_RDWR, 0666);
     if (fd == -1){
-      fprintf(stderr, "Eroare shm_open creator\n");
+      fprintf(stderr, "Eroare shm_open creator - posibil că un alt creator rulează deja\n");
       exit(EXIT_FAILURE);
     }
     // setez dimensiunea zonei de memorie partajata
@@ -362,6 +383,11 @@ int main(int argc, char* argv[]){
     }
     printf("Creator -> segmentul de memorie a fost creat\n");
   }else if (current_player == 1){
+    if(signal(SIGINT, signal_handler) == SIG_ERR){
+      fprintf(stderr, "Eroare la setarea signal handler-ului.\n");
+      exit(EXIT_FAILURE);
+    }
+    
     fd = shm_open(SHM_NAME, O_RDWR, 0666);
     if (fd == -1){
       fprintf(stderr, "Eroare shm_open worker | Rulati prima data procesul creator (jucatorul 0)\n");
@@ -376,6 +402,8 @@ int main(int argc, char* argv[]){
     exit(EXIT_FAILURE);
   }
   close(fd);
+  
+  global_shm_ptr = shm_ptr;
 
   int offset_x = 2; // offset pentru pozitionare jucatori pe tabla
   int offset_y = 2; 
@@ -503,8 +531,10 @@ int main(int argc, char* argv[]){
     }
     printf("Creator -> segmentul de memorie a fost sters\n");
   }else if (current_player == 1){
-    fprintf(stderr, "Creatorul a parasit jocul.\n");
-    exit(EXIT_SUCCESS);
+    if(terminate_flag){
+      fprintf(stderr, "Creatorul a parasit jocul.\n");
+      exit(EXIT_SUCCESS);
+    }
   }
   return 0;
 }
