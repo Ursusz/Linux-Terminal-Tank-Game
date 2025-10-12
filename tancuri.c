@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 
 #include "ncurses_fncs.c"
 
@@ -21,8 +22,6 @@
  de accesarea simultana prin semafoare. Interfata va fi ncurses.
 */
 
-// TODO: implementez sistem destroy bullet + eliminare din vectorul de bullets + coliziuni + HP
-
 struct{
   int up, down, left, right, fire, quit;
 } player_binds; 
@@ -33,6 +32,8 @@ struct{
 
 int current_player = -1;
 bool creator_left = 0;
+volatile sig_atomic_t terminate_flag = 0;
+bool player_won = false;
 
 void initializare_semafoare(shared_matrix_t *shm_ptr){
   for (int i = 0; i < MATRIX_SIZE; i++){
@@ -76,26 +77,32 @@ void init_keys(){
   printw("Configurare bind-uri taste:\n");
   printw("Introduceti comanda pentru SUS: ");
   player_binds.up = getch();
+  if(terminate_flag) return;
   printw("\n");
 
   printw("Introduceti comanda pentru JOS: ");
   player_binds.down = getch();
+  if(terminate_flag) return;
   printw("\n");
 
   printw("Introduceti comanda pentru STANGA: ");
   player_binds.left = getch();
+  if(terminate_flag) return;
   printw("\n");
   
   printw("Introduceti comanda pentru DREAPTA: ");
   player_binds.right = getch();
+  if(terminate_flag) return;
   printw("\n");
 
   printw("Introduceti comanda pentru FIRE: ");
   player_binds.fire = getch();
+  if(terminate_flag) return;
   printw("\n");
 
   printw("Introduceti comanda pentru QUIT: ");
   player_binds.quit = getch();
+  if(terminate_flag) return;
   printw("\n");
 }
 
@@ -151,7 +158,7 @@ void move_player(int direction, shared_matrix_t* shm_ptr){
 }
 
 void player_fire(shared_matrix_t* shm_ptr){
-  if (player_stats.last_direction != -1){
+  if (player_stats.last_direction != -1 && shm_ptr->num_bullets < MAX_BULLETS){
     shm_ptr->num_bullets += 1;
 
     int last_bullet = shm_ptr->num_bullets - 1; 
@@ -160,26 +167,26 @@ void player_fire(shared_matrix_t* shm_ptr){
       case 0:
       // UP
         shm_ptr->bullets[last_bullet].direction = 0;
-        shm_ptr->bullets[last_bullet].x = shm_ptr->players[0].x - 1; 
-        shm_ptr->bullets[last_bullet].y = shm_ptr->players[0].y;
+        shm_ptr->bullets[last_bullet].x = shm_ptr->players[current_player].x - 1; 
+        shm_ptr->bullets[last_bullet].y = shm_ptr->players[current_player].y;
         break;
       case 1:
       // LEFT
         shm_ptr->bullets[last_bullet].direction = 1;
-        shm_ptr->bullets[last_bullet].x = shm_ptr->players[0].x; 
-        shm_ptr->bullets[last_bullet].y = shm_ptr->players[0].y - 1;
+        shm_ptr->bullets[last_bullet].x = shm_ptr->players[current_player].x; 
+        shm_ptr->bullets[last_bullet].y = shm_ptr->players[current_player].y - 1;
         break;
       case 2:
       // DOWN
         shm_ptr->bullets[last_bullet].direction = 2;
-        shm_ptr->bullets[last_bullet].x = shm_ptr->players[0].x + 1; 
-        shm_ptr->bullets[last_bullet].y = shm_ptr->players[0].y;
+        shm_ptr->bullets[last_bullet].x = shm_ptr->players[current_player].x + 1; 
+        shm_ptr->bullets[last_bullet].y = shm_ptr->players[current_player].y;
         break;
       case 3:
       // RIGHT
         shm_ptr->bullets[last_bullet].direction = 3;
-        shm_ptr->bullets[last_bullet].x = shm_ptr->players[0].x; 
-        shm_ptr->bullets[last_bullet].y = shm_ptr->players[0].y + 1;
+        shm_ptr->bullets[last_bullet].x = shm_ptr->players[current_player].x; 
+        shm_ptr->bullets[last_bullet].y = shm_ptr->players[current_player].y + 1;
         break;
       default: break;
     }
@@ -190,12 +197,100 @@ void update_bullets(shared_matrix_t* shm_ptr){
   if(shm_ptr->bullets){
     for(int i = 0; i < shm_ptr->num_bullets; i++){
       bullet* current_bullet = &shm_ptr->bullets[i];
+      int old_x = current_bullet->x;
+      int old_y = current_bullet->y;
+
+      int new_x = old_x;
+      int new_y = old_y;
       switch(current_bullet->direction){
-        case 0: current_bullet->x -= 1; break;
-        case 1: current_bullet->y -= 1; break;
-        case 2: current_bullet->x += 1; break;
-        case 3: current_bullet->y += 1; break;
+        case 0: new_x -= 1; break;
+        case 1: new_y -= 1; break;
+        case 2: new_x += 1; break;
+        case 3: new_y += 1; break;
         default: break;
+      }
+      
+      if(new_x < 0 || new_x >= ROWS || new_y < 0 || new_y >= COLUMNS){
+        int old_index = COLUMNS * old_x + old_y;
+        
+        if(sem_wait(&(shm_ptr->cell_semaphores[old_index])) == -1){
+          printw("sem_wait failed for out of bounds bullet\n");
+          exit(EXIT_FAILURE);
+        }
+        
+        shm_ptr->tabla[old_index] = ' ';
+        
+        if(sem_post(&(shm_ptr->cell_semaphores[old_index])) == -1){
+          printw("sem_post failed for out of bounds bullet\n");
+          exit(EXIT_FAILURE);
+        }
+        
+        for(int j = i; j < shm_ptr->num_bullets - 1; j++){
+          shm_ptr->bullets[j] = shm_ptr->bullets[j+1];
+        }
+        shm_ptr->num_bullets -= 1;
+        i--;
+        continue;
+      }
+      
+      int old_index = COLUMNS * old_x + old_y;
+      int new_index = COLUMNS * new_x + new_y;
+
+      if(old_index == new_index){
+        continue;
+      }
+
+      int first_index = (old_index < new_index) ? old_index : new_index;
+      int second_index = (old_index < new_index) ? new_index : old_index;
+
+      if(sem_wait(&(shm_ptr->cell_semaphores[first_index])) == -1){
+        printw("sem_wait failed first index\n");
+        exit(EXIT_FAILURE);
+      }
+      if(first_index != second_index && sem_wait(&(shm_ptr->cell_semaphores[second_index])) == -1){
+        sem_post(&(shm_ptr->cell_semaphores[first_index]));
+        printw("sem_wait failed second index\n");
+        exit(EXIT_FAILURE);
+      }
+      
+      if(shm_ptr->tabla[new_index] == '#' || shm_ptr->tabla[new_index] == shm_ptr->plyr1 || shm_ptr->tabla[new_index] == shm_ptr->plyr2){
+        shm_ptr->tabla[old_index] = ' ';
+        
+        for(int j = i; j < shm_ptr->num_bullets - 1; j++){
+          shm_ptr->bullets[j] = shm_ptr->bullets[j+1];
+        }
+        shm_ptr->num_bullets -= 1;
+        i--;
+        if(shm_ptr->tabla[new_index] == shm_ptr->plyr1){
+          if(shm_ptr->plyr1HP >= 10){
+            shm_ptr->plyr1HP -= 10;
+          }else{
+            shm_ptr->plyr1HP = 0;
+            player_won = true;
+          }
+        }else if(shm_ptr->tabla[new_index] == shm_ptr->plyr2){
+          if(shm_ptr->plyr2HP >= 10){
+            shm_ptr->plyr2HP -= 10;
+          }else{
+            shm_ptr->plyr2HP = 0;
+            player_won = true;
+          }
+        }
+      }else {
+        current_bullet->x = new_x;
+        current_bullet->y = new_y;
+        
+        shm_ptr->tabla[old_index] = ' ';
+        shm_ptr->tabla[new_index] = '.';
+      }
+    
+      if(first_index != second_index && sem_post(&(shm_ptr->cell_semaphores[second_index])) == -1){
+        printw("sem_post failed second\n");
+        exit(EXIT_FAILURE);
+      }
+      if(sem_post(&(shm_ptr->cell_semaphores[first_index])) == -1){
+        printw("sem_post failed first\n");
+        exit(EXIT_FAILURE);
       }
     }
   }
@@ -206,7 +301,6 @@ int handle_input(int key, shared_matrix_t* shm_ptr){
     if (current_player == 0){
       shm_ptr->creator_quit = 1;
     }
-    return 0;
   }
   if (key == player_binds.up){
     move_player(0, shm_ptr);
@@ -226,19 +320,35 @@ int handle_input(int key, shared_matrix_t* shm_ptr){
   return 1;
 }
 
+void signal_handler(int signum){
+  if (signum == SIGINT && current_player == 0){
+    terminate_flag = 1;
+  }
+}
+
 int main(int argc, char* argv[]){
   if (argc != 3){
     fprintf(stderr, "Utilizare: %s <cale_fisier> identificator_jucator (0 - creator, 1 - worker)\n", argv[0]);
     exit(EXIT_FAILURE);
   }
 
-  current_player = atoi(argv[2]);
+  int plyrID = atoi(argv[2]);
+  if (plyrID != 0 && plyrID != 1){
+    fprintf(stderr, "Jucatorul curent trebuie sa fie 0 - creator sau 1 - worker!\n");
+    exit(EXIT_FAILURE);
+  }
+  current_player = plyrID;
 
   int fd;
   shared_matrix_t *shm_ptr;
   size_t shm_size = sizeof(shared_matrix_t);
 
   if (current_player == 0){
+    if(signal(SIGINT, signal_handler) == SIG_ERR){
+      fprintf(stderr, "Eroare la setarea signal handler-ului.\n");
+      exit(EXIT_FAILURE);
+    }
+
     // creez zoma mem partajata -> 0666 permisiuni (Ignorat, owner, grup, altii) -> 6 (citire 4, scriere 2, executare 0)
     fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
     if (fd == -1){
@@ -250,7 +360,7 @@ int main(int argc, char* argv[]){
       fprintf(stderr, "Eroare ftruncate\n");
       exit(EXIT_FAILURE);
     }
-    fprintf(stderr, "Creator -> segmentul de memorie a fost creat\n");
+    printf("Creator -> segmentul de memorie a fost creat\n");
   }else if (current_player == 1){
     fd = shm_open(SHM_NAME, O_RDWR, 0666);
     if (fd == -1){
@@ -284,6 +394,8 @@ int main(int argc, char* argv[]){
     current_player->y = 0 + offset_y;
 
     shm_ptr->num_bullets = 0;
+    shm_ptr->plyr1HP = 100;
+    shm_ptr->plyr2HP = 100;
 
     shm_ptr->creator_quit = 0;
   }else if(current_player == 1){
@@ -300,10 +412,13 @@ int main(int argc, char* argv[]){
   init_keys();
   refresh();
 
-  printw("Introduceti caracterul jucatorului: ");
-  char plyr = getch();
-  while(!isalpha(plyr)){
-    // clear();
+  char plyr;
+  if(!terminate_flag){
+    printw("Introduceti caracterul jucatorului: ");
+    plyr = getch();
+  }
+  while(!isalpha(plyr) && terminate_flag == 0){
+    clear();
     refresh();
     printw("Caracterul introdus trebuie sa fie o litera %c!\n", plyr);
     printw("Introduceti caracterul jucatorului: ");
@@ -328,21 +443,29 @@ int main(int argc, char* argv[]){
   int key;
   int running = 1;
   while(running){
-    if (shm_ptr->creator_quit == 1){
+    if (shm_ptr->creator_quit == 1 || terminate_flag == 1){
+      break;
+    }
+
+    if(shm_ptr->plyr1HP <= 0 || shm_ptr->plyr2HP <= 0){
+      player_won = true;
+      break;
+    }
+    
+    update_bullets(shm_ptr);
+    if(player_won){
       clear();
       refresh();
-      curs_set(1);
-      endwin();
-      fprintf(stderr, "Creatorul a parasit jocul.\n");
-      exit(EXIT_SUCCESS);
+      break;
     }
-    update_bullets(shm_ptr);
+
     print_board(shm_ptr->tabla,                     // tabla
       shm_ptr->players[0].x, shm_ptr->players[0].y, // coordonate player 1 
       shm_ptr->players[1].x, shm_ptr->players[1].y, // coordonate player 2
       shm_ptr->plyr1, shm_ptr->plyr2,               // caractere player1, player2
       shm_ptr->bullets,                             // gloantele de pe tabla
-      shm_ptr->num_bullets                          // nr de gloante
+      shm_ptr->num_bullets,                         // nr de gloante
+      shm_ptr->plyr1HP, shm_ptr->plyr2HP            // HP jucători
     );
     
     key = getch();
@@ -352,17 +475,36 @@ int main(int argc, char* argv[]){
     napms(50);
   }
 
+  int final_plyr1HP = shm_ptr->plyr1HP;
+  int final_plyr2HP = shm_ptr->plyr2HP;
+  char final_plyr1 = shm_ptr->plyr1;
+  char final_plyr2 = shm_ptr->plyr2;
+
   if (munmap(shm_ptr, shm_size) == -1) {
       perror("munmap failed");
   }
   curs_set(1);
   endwin();
 
+  if(player_won){
+    if(final_plyr1HP <= 0){
+      printf("Player 2 (%c) WON!\n", final_plyr2);
+    }else if(final_plyr2HP <= 0){
+      printf("Player 1 (%c) WON!\n", final_plyr1);
+    }
+  }else{
+    printf("Game ended.\n");
+  }
+
   if(current_player == 0){
     if(shm_unlink(SHM_NAME) == -1){
       fprintf(stderr, "Eroare shm_unlink creator");
       exit(EXIT_FAILURE);
-    }  
+    }
+    printf("Creator -> segmentul de memorie a fost sters\n");
+  }else if (current_player == 1){
+    fprintf(stderr, "Creatorul a parasit jocul.\n");
+    exit(EXIT_SUCCESS);
   }
   return 0;
 }

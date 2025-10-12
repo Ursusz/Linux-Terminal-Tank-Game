@@ -29,7 +29,7 @@ typedef struct{
   
   player_pos players[2];
   char plyr1, plyr2;
-  int plyr1HP, plyer2HP;
+  int plyr1HP, plyr2HP;
   bool creator_quit;
 
   bullet bullets[MAX_BULLETS];
