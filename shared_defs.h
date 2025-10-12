@@ -6,9 +6,10 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <semaphore.h>
+#include <stdbool.h>
 
 #define ROWS 20
-#define COLUMNS 20
+#define COLUMNS 65
 // numele segmentului de memorie partajata
 #define SHM_NAME "/shm_tabla"
 #define MATRIX_SIZE (ROWS * COLUMNS)
