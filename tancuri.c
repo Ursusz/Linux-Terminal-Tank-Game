@@ -1,0 +1,368 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "ncurses_fncs.c"
+
+/*
+1. Implementati un joc de tancuri care se poate juca in doi, la o aceeasi
+ tastatura. Tancurile sunt caractere-litera (care identifica jucatorul),
+ trag cu caractere-punct si se deplaseaza pe o tabla care contine si ziduri
+ (labirint); tancul se poate deplasa de la tastatura sus, jos, dreapta,
+ stanga; proiectilul e tras la comanda, in directia de deplasare a
+ tancului; proiectilul se deplaseaza animat pe tabla pana loveste un tanc,
+ un zid sau marginea tablei; daca loveste un tanc, i se scade din viata
+ (vietile sunt afisate in colturi); jucatorul care ajunge cu viata la 0
+ pierde.
+   Tabla va fi implementata ca o matrice de pozitii alocata intr-un segnment
+ de memorie partajata; fiecare jucator va opera pe tabla respectiva cu un
+ proces propriu - jocul tanc este lansat de un jucator lansand un acelasi
+ program, caruia i se dau ca argumente in linia de comanda tabla, litera
+ jucatorului, comenzile de deplasare si foc; pozitiile pe tabla sunt protejate
+ de accesarea simultana prin semafoare. Interfata va fi ncurses.
+*/
+
+// TODO: implementez sistem destroy bullet + eliminare din vectorul de bullets + coliziuni + HP
+
+struct{
+  int up, down, left, right, fire, quit;
+} player_binds; 
+
+struct{
+  int last_direction;
+} player_stats = {-1};
+
+int current_player = -1;
+bool creator_left = 0;
+
+void initializare_semafoare(shared_matrix_t *shm_ptr){
+  for (int i = 0; i < MATRIX_SIZE; i++){
+    //int sem_init(sem_t *sem, int pshared, unsigned int value);
+    if (sem_init(&(shm_ptr->cell_semaphores[i]), 1, 1) == -1){
+      printw("Eroare sem_init\n");
+      exit(EXIT_FAILURE);
+    }
+  }
+
+  printw("Creator: %d semafoare initializate.\n", MATRIX_SIZE);
+}
+
+char* citire_fisier(char* file_path){
+  FILE *file = fopen(file_path, "r");
+  if (file == NULL){
+    printw("Eroare citire fisier tabla.\n");
+    exit(EXIT_FAILURE);
+  }
+
+  char* tabla = (char*)malloc(MATRIX_SIZE * sizeof(char));
+  if (tabla == NULL){
+    printw("Eroare alocare memorie tabla");
+    fclose(file);
+    exit(EXIT_FAILURE);
+  }
+
+  int i = 0;
+  int c;
+  while((i < MATRIX_SIZE) && ((c = fgetc(file)) != EOF)){
+    tabla[i++] = (char)c;
+    if (i % COLUMNS == 0){
+      int newline = fgetc(file);
+    }
+  }
+  fclose(file);
+  return tabla;
+}
+
+void init_keys(){
+  printw("Configurare bind-uri taste:\n");
+  printw("Introduceti comanda pentru SUS: ");
+  player_binds.up = getch();
+  printw("\n");
+
+  printw("Introduceti comanda pentru JOS: ");
+  player_binds.down = getch();
+  printw("\n");
+
+  printw("Introduceti comanda pentru STANGA: ");
+  player_binds.left = getch();
+  printw("\n");
+  
+  printw("Introduceti comanda pentru DREAPTA: ");
+  player_binds.right = getch();
+  printw("\n");
+
+  printw("Introduceti comanda pentru FIRE: ");
+  player_binds.fire = getch();
+  printw("\n");
+
+  printw("Introduceti comanda pentru QUIT: ");
+  player_binds.quit = getch();
+  printw("\n");
+}
+
+void move_player(int direction, shared_matrix_t* shm_ptr){
+  int old_x = shm_ptr->players[current_player].x;
+  int old_y = shm_ptr->players[current_player].y;
+
+  int new_x = old_x;
+  int new_y = old_y;
+
+  switch(direction){
+    case 0: new_x -= 1; break;
+    case 1: new_y -= 1; break;
+    case 2: new_x += 1; break;
+    case 3: new_y += 1; break;
+    default: break;
+  }
+
+  int old_index = COLUMNS * old_x + old_y;
+  int new_index = COLUMNS * new_x + new_y;
+
+  int first_index = (old_index < new_index) ? old_index : new_index;
+  int second_index = (old_index < new_index) ? new_index : old_index;
+
+  if(sem_wait(&(shm_ptr->cell_semaphores[first_index])) == -1){
+    printw("sem_wait failed first index\n");
+    exit(EXIT_FAILURE);
+  }
+  if(sem_wait(&(shm_ptr->cell_semaphores[second_index])) == -1){
+    sem_post(&(shm_ptr->cell_semaphores[first_index]));
+    printw("sem_wait failed second index\n");
+    exit(EXIT_FAILURE);
+  }
+  if(shm_ptr->tabla[new_index] == ' ' && new_x >= 0 && new_x < ROWS && new_y >= 0 && new_y < COLUMNS){
+    shm_ptr->players[current_player].x = new_x;
+    shm_ptr->players[current_player].y = new_y;
+    player_stats.last_direction = direction;
+
+    char plyr = (current_player == 0) ? shm_ptr->plyr1 : shm_ptr->plyr2;
+
+    shm_ptr->tabla[old_index] = ' ';
+    shm_ptr->tabla[new_index] = plyr;
+  }
+
+  if(sem_post(&(shm_ptr->cell_semaphores[second_index])) == -1){
+    printw("sem_post failed");
+    exit(EXIT_FAILURE);
+  }
+  if(sem_post(&(shm_ptr->cell_semaphores[first_index])) == -1){
+    printw("sem_post failed");
+    exit(EXIT_FAILURE);
+  }
+}
+
+void player_fire(shared_matrix_t* shm_ptr){
+  if (player_stats.last_direction != -1){
+    shm_ptr->num_bullets += 1;
+
+    int last_bullet = shm_ptr->num_bullets - 1; 
+
+    switch(player_stats.last_direction){
+      case 0:
+      // UP
+        shm_ptr->bullets[last_bullet].direction = 0;
+        shm_ptr->bullets[last_bullet].x = shm_ptr->players[0].x - 1; 
+        shm_ptr->bullets[last_bullet].y = shm_ptr->players[0].y;
+        break;
+      case 1:
+      // LEFT
+        shm_ptr->bullets[last_bullet].direction = 1;
+        shm_ptr->bullets[last_bullet].x = shm_ptr->players[0].x; 
+        shm_ptr->bullets[last_bullet].y = shm_ptr->players[0].y - 1;
+        break;
+      case 2:
+      // DOWN
+        shm_ptr->bullets[last_bullet].direction = 2;
+        shm_ptr->bullets[last_bullet].x = shm_ptr->players[0].x + 1; 
+        shm_ptr->bullets[last_bullet].y = shm_ptr->players[0].y;
+        break;
+      case 3:
+      // RIGHT
+        shm_ptr->bullets[last_bullet].direction = 3;
+        shm_ptr->bullets[last_bullet].x = shm_ptr->players[0].x; 
+        shm_ptr->bullets[last_bullet].y = shm_ptr->players[0].y + 1;
+        break;
+      default: break;
+    }
+  }
+}
+
+void update_bullets(shared_matrix_t* shm_ptr){
+  if(shm_ptr->bullets){
+    for(int i = 0; i < shm_ptr->num_bullets; i++){
+      bullet* current_bullet = &shm_ptr->bullets[i];
+      switch(current_bullet->direction){
+        case 0: current_bullet->x -= 1; break;
+        case 1: current_bullet->y -= 1; break;
+        case 2: current_bullet->x += 1; break;
+        case 3: current_bullet->y += 1; break;
+        default: break;
+      }
+    }
+  }
+}
+
+int handle_input(int key, shared_matrix_t* shm_ptr){
+  if (key == player_binds.quit){
+    if (current_player == 0){
+      shm_ptr->creator_quit = 1;
+    }
+    return 0;
+  }
+  if (key == player_binds.up){
+    move_player(0, shm_ptr);
+  }
+  if (key == player_binds.left){
+    move_player(1, shm_ptr);
+  }
+  if (key == player_binds.down){
+    move_player(2, shm_ptr);
+  }
+  if (key == player_binds.right){
+    move_player(3, shm_ptr);
+  }
+  if (key == player_binds.fire){
+    player_fire(shm_ptr);
+  }
+  return 1;
+}
+
+int main(int argc, char* argv[]){
+  if (argc != 3){
+    fprintf(stderr, "Utilizare: %s <cale_fisier> identificator_jucator (0 - creator, 1 - worker)\n", argv[0]);
+    exit(EXIT_FAILURE);
+  }
+
+  current_player = atoi(argv[2]);
+
+  int fd;
+  shared_matrix_t *shm_ptr;
+  size_t shm_size = sizeof(shared_matrix_t);
+
+  if (current_player == 0){
+    // creez zoma mem partajata -> 0666 permisiuni (Ignorat, owner, grup, altii) -> 6 (citire 4, scriere 2, executare 0)
+    fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    if (fd == -1){
+      fprintf(stderr, "Eroare shm_open creator\n");
+      exit(EXIT_FAILURE);
+    }
+    // setez dimensiunea zonei de memorie partajata
+    if (ftruncate(fd, shm_size) == -1){
+      fprintf(stderr, "Eroare ftruncate\n");
+      exit(EXIT_FAILURE);
+    }
+    fprintf(stderr, "Creator -> segmentul de memorie a fost creat\n");
+  }else if (current_player == 1){
+    fd = shm_open(SHM_NAME, O_RDWR, 0666);
+    if (fd == -1){
+      fprintf(stderr, "Eroare shm_open worker | Rulati prima data procesul creator (jucatorul 0)\n");
+      exit(EXIT_FAILURE);
+    }
+  }
+
+  //void *mmap(void *addr, size_t len, int prot, int flags, int fildes, off_t off);
+  shm_ptr = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (shm_ptr == MAP_FAILED){
+    fprintf(stderr, "Eroare mmap()\n");
+    exit(EXIT_FAILURE);
+  }
+  close(fd);
+
+  int offset_x = 2; // offset pentru pozitionare jucatori pe tabla
+  int offset_y = 2; 
+  if (current_player == 0){
+    initializare_semafoare(shm_ptr);
+    
+    // citire tabla din fisier.txt -> incarcare in zona de memorie partajata
+    char* tabla_citita = citire_fisier(argv[1]);
+    for(int i = 0; i < MATRIX_SIZE; i++){
+      shm_ptr->tabla[i] = tabla_citita[i];
+    }
+    free(tabla_citita);
+    player_pos* current_player = &shm_ptr->players[0];
+    
+    current_player->x = 0 + offset_x;
+    current_player->y = 0 + offset_y;
+
+    shm_ptr->num_bullets = 0;
+
+    shm_ptr->creator_quit = 0;
+  }else if(current_player == 1){
+    player_pos* current_player = &shm_ptr->players[1];
+    current_player->x = ROWS - 1 - offset_x;
+    current_player->y = COLUMNS - 1 - offset_y;
+
+    shm_ptr->tabla[current_player->x * COLUMNS + current_player->y] = shm_ptr->plyr2;
+  }
+  
+  initscr();
+  cbreak();
+  keypad(stdscr, TRUE);
+  init_keys();
+  refresh();
+
+  printw("Introduceti caracterul jucatorului: ");
+  char plyr = getch();
+  while(!isalpha(plyr)){
+    // clear();
+    refresh();
+    printw("Caracterul introdus trebuie sa fie o litera %c!\n", plyr);
+    printw("Introduceti caracterul jucatorului: ");
+    plyr = getch();
+  }
+  if(current_player == 0){
+    shm_ptr->plyr1 = plyr;
+    shm_ptr->plyr2 = ' ';
+
+    shm_ptr->tabla[shm_ptr->players[0].x * COLUMNS + shm_ptr->players[0].y] = shm_ptr->plyr1;
+  }else if(current_player == 1){
+    shm_ptr->plyr2 = plyr;
+
+    shm_ptr->tabla[shm_ptr->players[1].x * COLUMNS + shm_ptr->players[1].y] = shm_ptr->plyr2;
+  }
+
+  noecho();
+  nodelay(stdscr, TRUE);
+  clear();
+  refresh();
+
+  int key;
+  int running = 1;
+  while(running){
+    if (shm_ptr->creator_quit == 1){
+      clear();
+      refresh();
+      curs_set(1);
+      endwin();
+      fprintf(stderr, "Creatorul a parasit jocul.\n");
+      exit(EXIT_SUCCESS);
+    }
+    update_bullets(shm_ptr);
+    print_board(shm_ptr->tabla,                     // tabla
+      shm_ptr->players[0].x, shm_ptr->players[0].y, // coordonate player 1 
+      shm_ptr->players[1].x, shm_ptr->players[1].y, // coordonate player 2
+      shm_ptr->plyr1, shm_ptr->plyr2,               // caractere player1, player2
+      shm_ptr->bullets,                             // gloantele de pe tabla
+      shm_ptr->num_bullets                          // nr de gloante
+    );
+    
+    key = getch();
+    if(key != ERR){
+      running = handle_input(key, shm_ptr); 
+    }
+    napms(50);
+  }
+
+  if (munmap(shm_ptr, shm_size) == -1) {
+      perror("munmap failed");
+  }
+  curs_set(1);
+  endwin();
+
+  if(current_player == 0){
+    if(shm_unlink(SHM_NAME) == -1){
+      fprintf(stderr, "Eroare shm_unlink creator");
+      exit(EXIT_FAILURE);
+    }  
+  }
+  return 0;
+}
