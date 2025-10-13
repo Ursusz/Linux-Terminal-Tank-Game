@@ -459,6 +459,7 @@ int main(int argc, char* argv[]){
     initializare_semafoare(shm_ptr);
     
     // citire tabla din fisier.txt -> incarcare in zona de memorie partajata
+
     char* tabla_citita = citire_fisier(argv[1]);
     for(int i = 0; i < MATRIX_SIZE; i++){
       shm_ptr->tabla[i] = tabla_citita[i];
