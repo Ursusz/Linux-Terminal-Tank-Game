@@ -13,7 +13,7 @@
 // numele segmentului de memorie partajata
 #define SHM_NAME "/shm_tabla"
 #define MATRIX_SIZE (ROWS * COLUMNS)
-#define MAX_BULLETS 100
+#define MAX_BULLETS 2
 
 typedef struct{
   int x, y;
@@ -22,6 +22,7 @@ typedef struct{
 typedef struct{
   int direction;
   int x, y;
+  bool available;
 } bullet;
 
 typedef struct{
@@ -32,7 +33,7 @@ typedef struct{
   char plyr1, plyr2;
   int plyr1HP, plyr2HP;
   bool creator_quit;
+  bool both_players_online;
 
   bullet bullets[MAX_BULLETS];
-  int num_bullets;
 } shared_matrix_t;

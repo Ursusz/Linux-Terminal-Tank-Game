@@ -1,7 +1,7 @@
 #include <ncurses.h>
 #include "shared_defs.h"
 
-void print_board(char* tabla, int x1, int y1, int x2, int y2, char plyr1, char plyr2, bullet* bullets, int num_bullets, int plyr1HP, int plyr2HP){
+void print_board(char* tabla, int x1, int y1, int x2, int y2, char plyr1, char plyr2, bullet* bullets, int plyr1HP, int plyr2HP){
   curs_set(0);
   int row = 0;
   int col = 10;
@@ -22,18 +22,12 @@ void print_board(char* tabla, int x1, int y1, int x2, int y2, char plyr1, char p
     if (x1 == rand_curent && y1 == coloana_curenta){
       ch_to_display = plyr1;
     }
-    else if (x2 == rand_curent && y2 == coloana_curenta){
+    else if (x2 == rand_curent && y2 == coloana_curenta && plyr2 != ' '){
       ch_to_display = plyr2;
     }
     
-    for(int j = 0; j < num_bullets; j++){
-      if(bullets[j].x == rand_curent && bullets[j].y == coloana_curenta){
-        ch_to_display = '.';
-        break;
-      }
-    }
-    
     mvaddch(rand, coloana, ch_to_display);
+
   }
   
   refresh();
