@@ -23,12 +23,8 @@
 */
 
 struct{
-  int up, down, left, right, fire, quit;
-} player_binds; 
-
-struct{
   int last_direction;
-} player_stats = {-1};
+} player_stats[2] = {{-1}, {-1}};
 
 int current_player = -1;
 volatile sig_atomic_t terminate_flag = 0;
@@ -74,42 +70,42 @@ char* citire_fisier(char* file_path){
   return tabla;
 }
 
-void init_keys(){
+void init_keys(shared_matrix_t* shm_ptr){
   printw("Configurare bind-uri taste:\n");
   printw("Introduceti comanda pentru SUS: ");
-  player_binds.up = getch();
+  shm_ptr->binds[current_player].up = getch();
   if(terminate_flag) return;
   printw("\n");
 
   printw("Introduceti comanda pentru JOS: ");
-  player_binds.down = getch();
+  shm_ptr->binds[current_player].down = getch();
   if(terminate_flag) return;
   printw("\n");
 
   printw("Introduceti comanda pentru STANGA: ");
-  player_binds.left = getch();
+  shm_ptr->binds[current_player].left = getch();
   if(terminate_flag) return;
   printw("\n");
   
   printw("Introduceti comanda pentru DREAPTA: ");
-  player_binds.right = getch();
+  shm_ptr->binds[current_player].right = getch();
   if(terminate_flag) return;
   printw("\n");
 
   printw("Introduceti comanda pentru FIRE: ");
-  player_binds.fire = getch();
+  shm_ptr->binds[current_player].fire = getch();
   if(terminate_flag) return;
   printw("\n");
 
   printw("Introduceti comanda pentru QUIT: ");
-  player_binds.quit = getch();
+  shm_ptr->binds[current_player].quit = getch();
   if(terminate_flag) return;
   printw("\n");
 }
 
-void move_player(int direction, shared_matrix_t* shm_ptr){
-  int old_x = shm_ptr->players[current_player].x;
-  int old_y = shm_ptr->players[current_player].y;
+void move_player(int direction, shared_matrix_t* shm_ptr, int player_id){
+  int old_x = shm_ptr->players[player_id].x;
+  int old_y = shm_ptr->players[player_id].y;
 
   int new_x = old_x;
   int new_y = old_y;
@@ -138,11 +134,11 @@ void move_player(int direction, shared_matrix_t* shm_ptr){
     exit(EXIT_FAILURE);
   }
   if(shm_ptr->tabla[new_index] == ' ' && new_x >= 0 && new_x < ROWS && new_y >= 0 && new_y < COLUMNS){
-    shm_ptr->players[current_player].x = new_x;
-    shm_ptr->players[current_player].y = new_y;
-    player_stats.last_direction = direction;
+    shm_ptr->players[player_id].x = new_x;
+    shm_ptr->players[player_id].y = new_y;
+    player_stats[player_id].last_direction = direction;
 
-    char plyr = (current_player == 0) ? shm_ptr->plyr1 : shm_ptr->plyr2;
+    char plyr = (player_id == 0) ? shm_ptr->plyr1 : shm_ptr->plyr2;
 
     shm_ptr->tabla[old_index] = ' ';
     shm_ptr->tabla[new_index] = plyr;
@@ -158,15 +154,14 @@ void move_player(int direction, shared_matrix_t* shm_ptr){
   }
 }
 
-void player_fire(shared_matrix_t* shm_ptr){
-  // TODO: sistem verificare fire sa poata fiecare jucator sa traga un singur glont o data
+void player_fire(shared_matrix_t* shm_ptr, int player_id){
 
-  bullet *curr_bullet = &shm_ptr->bullets[current_player];
-  if (player_stats.last_direction != -1 && curr_bullet->available){
-    int player_x = shm_ptr->players[current_player].x;
-    int player_y = shm_ptr->players[current_player].y;
+  bullet *curr_bullet = &shm_ptr->bullets[player_id];
+  if (player_stats[player_id].last_direction != -1 && curr_bullet->available){
+    int player_x = shm_ptr->players[player_id].x;
+    int player_y = shm_ptr->players[player_id].y;
 
-    switch(player_stats.last_direction){
+    switch(player_stats[player_id].last_direction){
       case 0:
       // UP
         if (player_x - 1 >= 0){
@@ -210,122 +205,127 @@ void player_fire(shared_matrix_t* shm_ptr){
 
 void update_bullets(shared_matrix_t* shm_ptr){
   if(shm_ptr->bullets){
-    // for(int i = 0; i < MAX_BULLETS; i++){
-      bullet* current_bullet = &shm_ptr->bullets[current_player];
-      
-      // bullet->available == false -> bullet-ul a fost tras, se afla pe harta, trebuie updatat
-      if(current_bullet->available == false){
-        int old_x = current_bullet->x;
-        int old_y = current_bullet->y;
-
-        int new_x = old_x;
-        int new_y = old_y;
-        switch(current_bullet->direction){
-          case 0: new_x -= 1; break;
-          case 1: new_y -= 1; break;
-          case 2: new_x += 1; break;
-          case 3: new_y += 1; break;
-          default: break;
-        }
-
-        // verificare bullet iesit out of bounds
-        if(new_x < 0 || new_x >= ROWS || new_y < 0 || new_y >= COLUMNS){
-          int old_index = COLUMNS * old_x + old_y;
-          
-          if(sem_wait(&(shm_ptr->cell_semaphores[old_index])) == -1){
-            printw("sem_wait failed for out of bounds bullet\n");
-            exit(EXIT_FAILURE);
-          }
-
-          shm_ptr->tabla[old_index] = ' ';
-          current_bullet->available = true;
-
-          if(sem_post(&(shm_ptr->cell_semaphores[old_index])) == -1){
-            printw("sem_post failed for out of bounds bullet\n");
-            exit(EXIT_FAILURE);
-          }
-
-          // continue;
-        }
-
+    bullet* current_bullet = &shm_ptr->bullets[current_player];
+    
+    // bullet->available == false -> bullet-ul a fost tras, se afla pe harta, trebuie updatat
+    if(current_bullet->available == false){
+      int old_x = current_bullet->x;
+      int old_y = current_bullet->y;
+      int new_x = old_x;
+      int new_y = old_y;
+      switch(current_bullet->direction){
+        case 0: new_x -= 1; break;
+        case 1: new_y -= 1; break;
+        case 2: new_x += 1; break;
+        case 3: new_y += 1; break;
+        default: break;
+      }
+      // verificare bullet iesit out of bounds
+      if(new_x < 0 || new_x >= ROWS || new_y < 0 || new_y >= COLUMNS){
         int old_index = COLUMNS * old_x + old_y;
-        int new_index = COLUMNS * new_x + new_y;
-
-        int first_index = (old_index < new_index) ? old_index : new_index;
-        int second_index = (old_index < new_index) ? new_index : old_index;
-
-        if(sem_wait(&(shm_ptr->cell_semaphores[first_index])) == -1){
-          printw("sem_wait failed first index\n");
+        
+        if(sem_wait(&(shm_ptr->cell_semaphores[old_index])) == -1){
+          printw("sem_wait failed for out of bounds bullet\n");
           exit(EXIT_FAILURE);
         }
-        if(first_index != second_index && sem_wait(&(shm_ptr->cell_semaphores[second_index])) == -1){
-          sem_post(&(shm_ptr->cell_semaphores[first_index]));
-          printw("sem_wait failed second index\n");
-          exit(EXIT_FAILURE);
-        }
-        if(shm_ptr->tabla[new_index] == '#' || shm_ptr->tabla[new_index] == shm_ptr->plyr1 || (shm_ptr->tabla[new_index] == shm_ptr->plyr2 && shm_ptr->both_players_online) ){
-          // COLIZIUNE GLONT CU ZID / PLAYER
-          shm_ptr->tabla[old_index] = ' ';
-
-          if(shm_ptr->tabla[new_index] == '#'){
-            current_bullet->available = true;
-          }
-
-          if(shm_ptr->tabla[new_index] == shm_ptr->plyr1){
-            current_bullet->available = true;
-            if(shm_ptr->plyr1 != ' '){
-              if(shm_ptr->plyr1HP >= 10){
-                shm_ptr->plyr1HP -= 10;
-              }else{
-                shm_ptr->plyr1HP = 0;
-                player_won = true;
-              }
-            }
-          }else if(shm_ptr->tabla[new_index] == shm_ptr->plyr2){
-            current_bullet->available = true;
-            if(shm_ptr->plyr2 != ' '){
-              if(shm_ptr->plyr2HP >= 10){
-                shm_ptr->plyr2HP -= 10;
-              }else{
-                shm_ptr->plyr2HP = 0;
-                player_won = true;
-              }
-            }
-          }
-        }else if(shm_ptr->tabla[new_index] == '.'){
-          // COLIZIUNE GLONT CU GLONT
-          for(int i = 0; i < MAX_BULLETS; i++){
-            shm_ptr->bullets[i].available = true;
-            shm_ptr->tabla[new_index] = ' ';
-            shm_ptr->tabla[old_index] = ' ';
-          }
-        }else{
-          // NICIO COLIZIUNE
-          current_bullet->x = new_x;
-          current_bullet->y = new_y;
-          
-          shm_ptr->tabla[old_index] = ' ';
-          shm_ptr->tabla[new_index] = '.';
-        }
-      
-        if(first_index != second_index && sem_post(&(shm_ptr->cell_semaphores[second_index])) == -1){
-          printw("sem_post failed second\n");
-          exit(EXIT_FAILURE);
-        }
-        if(sem_post(&(shm_ptr->cell_semaphores[first_index])) == -1){
-          printw("sem_post failed first\n");
+        shm_ptr->tabla[old_index] = ' ';
+        current_bullet->available = true;
+        if(sem_post(&(shm_ptr->cell_semaphores[old_index])) == -1){
+          printw("sem_post failed for out of bounds bullet\n");
           exit(EXIT_FAILURE);
         }
       }
-    // }
+      int old_index = COLUMNS * old_x + old_y;
+      int new_index = COLUMNS * new_x + new_y;
+      int first_index = (old_index < new_index) ? old_index : new_index;
+      int second_index = (old_index < new_index) ? new_index : old_index;
+      if(sem_wait(&(shm_ptr->cell_semaphores[first_index])) == -1){
+        printw("sem_wait failed first index\n");
+        exit(EXIT_FAILURE);
+      }
+      if(first_index != second_index && sem_wait(&(shm_ptr->cell_semaphores[second_index])) == -1){
+        sem_post(&(shm_ptr->cell_semaphores[first_index]));
+        printw("sem_wait failed second index\n");
+        exit(EXIT_FAILURE);
+      }
+      if(shm_ptr->tabla[new_index] == '#' || shm_ptr->tabla[new_index] == shm_ptr->plyr1 
+         || (shm_ptr->tabla[new_index] == shm_ptr->plyr2 && shm_ptr->both_players_online)){
+        // COLIZIUNE GLONT CU ZID / PLAYER
+        shm_ptr->tabla[old_index] = ' ';
+        if(shm_ptr->tabla[new_index] == '#'){
+          current_bullet->available = true;
+        }
+        if(shm_ptr->tabla[new_index] == shm_ptr->plyr1){
+          current_bullet->available = true;
+          if(shm_ptr->plyr1 != ' '){
+            if(shm_ptr->plyr1HP >= 10){
+              shm_ptr->plyr1HP -= 10;
+            }else{
+              shm_ptr->plyr1HP = 0;
+              player_won = true;
+            }
+          }
+        }else if(shm_ptr->tabla[new_index] == shm_ptr->plyr2){
+          current_bullet->available = true;
+          if(shm_ptr->plyr2 != ' '){
+            if(shm_ptr->plyr2HP >= 10){
+              shm_ptr->plyr2HP -= 10;
+            }else{
+              shm_ptr->plyr2HP = 0;
+              player_won = true;
+            }
+          }
+        }
+    }else if(shm_ptr->tabla[new_index] == '.'){
+        // COLIZIUNE GLONT CU GLONT
+        for(int i = 0; i < MAX_BULLETS; i++){
+          shm_ptr->bullets[i].available = true;
+          shm_ptr->tabla[new_index] = ' ';
+          shm_ptr->tabla[old_index] = ' ';
+        }
+      }else{
+        // NICIO COLIZIUNE
+        current_bullet->x = new_x;
+        current_bullet->y = new_y;
+        
+        shm_ptr->tabla[old_index] = ' ';
+        shm_ptr->tabla[new_index] = '.';
+      }
+    
+      if(first_index != second_index && sem_post(&(shm_ptr->cell_semaphores[second_index])) == -1){
+        printw("sem_post failed second\n");
+        exit(EXIT_FAILURE);
+      }
+      if(sem_post(&(shm_ptr->cell_semaphores[first_index])) == -1){
+        printw("sem_post failed first\n");
+        exit(EXIT_FAILURE);
+      }
+    }
   }
 }
 
 int handle_input(int key, shared_matrix_t* shm_ptr){
-  if (key == player_binds.quit){
-    if (current_player == 0){
-      shm_ptr->creator_quit = 1;
-    }else{
+  if (key == shm_ptr->binds[0].quit){
+    shm_ptr->creator_quit = true;
+  }
+  if (key == shm_ptr->binds[0].up){
+    move_player(0, shm_ptr, 0);
+  }
+  if (key == shm_ptr->binds[0].left){
+    move_player(1, shm_ptr, 0);
+  }
+  if (key == shm_ptr->binds[0].down){
+    move_player(2, shm_ptr, 0);
+  }
+  if (key == shm_ptr->binds[0].right){
+    move_player(3, shm_ptr, 0);
+  }
+  if (key == shm_ptr->binds[0].fire){
+    player_fire(shm_ptr, 0);
+  }
+
+  if (shm_ptr->both_players_online) {
+    if (key == shm_ptr->binds[1].quit){
       int old_x = shm_ptr->players[1].x;
       int old_y = shm_ptr->players[1].y;
       int old_index = COLUMNS * old_x + old_y;
@@ -335,8 +335,8 @@ int handle_input(int key, shared_matrix_t* shm_ptr){
           sem_post(&(shm_ptr->cell_semaphores[old_index]));
         }
       }
-      if (!shm_ptr->bullets[current_player].available){
-        bullet* worker_bullet = &shm_ptr->bullets[current_player];
+      if (!shm_ptr->bullets[1].available){
+        bullet* worker_bullet = &shm_ptr->bullets[1];
         int bx = worker_bullet->x;
         int by = worker_bullet->y;
         int b_index = bx * COLUMNS + by;
@@ -346,32 +346,31 @@ int handle_input(int key, shared_matrix_t* shm_ptr){
         }
         worker_bullet->available = true;
       }
-
       shm_ptr->plyr2 = ' ';
       shm_ptr->plyr2HP = 100;
       shm_ptr->both_players_online = false;
-
+      shm_ptr->worker_quit = true;
       curs_set(1);
       endwin();
-
       exit(EXIT_SUCCESS);
     }
+    if (key == shm_ptr->binds[1].up){
+      move_player(0, shm_ptr, 1);
+    }
+    if (key == shm_ptr->binds[1].left){
+      move_player(1, shm_ptr, 1);
+    }
+    if (key == shm_ptr->binds[1].down){
+      move_player(2, shm_ptr, 1);
+    }
+    if (key == shm_ptr->binds[1].right){
+      move_player(3, shm_ptr, 1);
+    }
+    if (key == shm_ptr->binds[1].fire){
+      player_fire(shm_ptr, 1);
+    }
   }
-  if (key == player_binds.up){
-    move_player(0, shm_ptr);
-  }
-  if (key == player_binds.left){
-    move_player(1, shm_ptr);
-  }
-  if (key == player_binds.down){
-    move_player(2, shm_ptr);
-  }
-  if (key == player_binds.right){
-    move_player(3, shm_ptr);
-  }
-  if (key == player_binds.fire){
-    player_fire(shm_ptr);
-  }
+  
   return 1;
 }
 
@@ -380,10 +379,13 @@ void signal_handler(int signum){
     if (current_player == 0) {
       terminate_flag = 1;
       if (global_shm_ptr != NULL) {
-        global_shm_ptr->creator_quit = 1;
+        global_shm_ptr->creator_quit = true;
       }
     } else if (current_player == 1) {
       terminate_flag = 1;
+      if (global_shm_ptr != NULL){
+        global_shm_ptr->worker_quit = true;
+      }
     }
   }
 }
@@ -459,7 +461,6 @@ int main(int argc, char* argv[]){
     initializare_semafoare(shm_ptr);
     
     // citire tabla din fisier.txt -> incarcare in zona de memorie partajata
-
     char* tabla_citita = citire_fisier(argv[1]);
     for(int i = 0; i < MATRIX_SIZE; i++){
       shm_ptr->tabla[i] = tabla_citita[i];
@@ -480,6 +481,7 @@ int main(int argc, char* argv[]){
     shm_ptr->both_players_online = false;
 
     shm_ptr->creator_quit = 0;
+    shm_ptr->worker_quit = false;
   }else if(current_player == 1){
     player_pos* current_player = &shm_ptr->players[1];
     current_player->x = ROWS - 1 - offset_x;
@@ -492,7 +494,7 @@ int main(int argc, char* argv[]){
   initscr();
   cbreak();
   keypad(stdscr, TRUE);
-  init_keys();
+  init_keys(shm_ptr);
   refresh();
 
   char plyr;
@@ -526,7 +528,7 @@ int main(int argc, char* argv[]){
   int key;
   int running = 1;
   while(running){
-    if (shm_ptr->creator_quit == 1 || terminate_flag == 1){
+    if (shm_ptr->creator_quit == 1 || shm_ptr->worker_quit == true || terminate_flag == 1){
       break;
     }
 
@@ -586,6 +588,10 @@ int main(int argc, char* argv[]){
   
   if(shm_ptr->creator_quit){
     fprintf(stderr, "Creatorul a parasit jocul.\n");
+  }
+  
+  if(shm_ptr->worker_quit){
+    fprintf(stderr, "Workerul a parasit jocul.\n");
   }
 
   if (munmap(shm_ptr, shm_size) == -1) {
