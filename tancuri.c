@@ -257,13 +257,11 @@ void update_bullets(shared_matrix_t* shm_ptr){
         }
         if(shm_ptr->tabla[new_index] == shm_ptr->plyr1){
           current_bullet->available = true;
-          if(shm_ptr->plyr1 != ' '){
-            if(shm_ptr->plyr1HP >= 10){
-              shm_ptr->plyr1HP -= 10;
-            }else{
-              shm_ptr->plyr1HP = 0;
-              player_won = true;
-            }
+          if(shm_ptr->plyr1HP >= 10){
+            shm_ptr->plyr1HP -= 10;
+          }else{
+            shm_ptr->plyr1HP = 0;
+            player_won = true;
           }
         }else if(shm_ptr->tabla[new_index] == shm_ptr->plyr2){
           current_bullet->available = true;
@@ -326,33 +324,7 @@ int handle_input(int key, shared_matrix_t* shm_ptr){
 
   if (shm_ptr->both_players_online) {
     if (key == shm_ptr->binds[1].quit){
-      int old_x = shm_ptr->players[1].x;
-      int old_y = shm_ptr->players[1].y;
-      int old_index = COLUMNS * old_x + old_y;
-      if (old_x >= 0 && old_x < ROWS && old_y >= 0 && old_y < COLUMNS) {
-        if (sem_wait(&(shm_ptr->cell_semaphores[old_index])) != -1) {
-          shm_ptr->tabla[old_index] = ' ';
-          sem_post(&(shm_ptr->cell_semaphores[old_index]));
-        }
-      }
-      if (!shm_ptr->bullets[1].available){
-        bullet* worker_bullet = &shm_ptr->bullets[1];
-        int bx = worker_bullet->x;
-        int by = worker_bullet->y;
-        int b_index = bx * COLUMNS + by;
-        if (sem_wait(&(shm_ptr->cell_semaphores[b_index])) != -1) {
-          shm_ptr->tabla[b_index] = ' ';
-          sem_post(&(shm_ptr->cell_semaphores[b_index]));
-        }
-        worker_bullet->available = true;
-      }
-      shm_ptr->plyr2 = ' ';
-      shm_ptr->plyr2HP = 100;
-      shm_ptr->both_players_online = false;
       shm_ptr->worker_quit = true;
-      curs_set(1);
-      endwin();
-      exit(EXIT_SUCCESS);
     }
     if (key == shm_ptr->binds[1].up){
       move_player(0, shm_ptr, 1);
@@ -413,17 +385,10 @@ int main(int argc, char* argv[]){
       exit(EXIT_FAILURE);
     }
 
-    fd = shm_open(SHM_NAME, O_RDWR, 0666);
-    if (fd != -1) {
-      close(fd);
-      fprintf(stderr, "Eroare: Un joc este deja in curs! Un alt proces creator ruleaza deja.\n");
-      exit(EXIT_FAILURE);
-    }
-
     // creez zona mem partajata -> 0666 permisiuni (Ignorat, owner, grup, altii) -> 6 (citire 4, scriere 2, executare 0)
     fd = shm_open(SHM_NAME, O_CREAT | O_EXCL | O_RDWR, 0666);
     if (fd == -1){
-      fprintf(stderr, "Eroare shm_open creator - posibil că un alt creator rulează deja\n");
+      fprintf(stderr, "Eroare shm_open creator - Un joc este deja in curs! Un alt proces creator ruleaza deja.\n");
       exit(EXIT_FAILURE);
     }
     // setez dimensiunea zonei de memorie partajata
@@ -480,7 +445,7 @@ int main(int argc, char* argv[]){
 
     shm_ptr->both_players_online = false;
 
-    shm_ptr->creator_quit = 0;
+    shm_ptr->creator_quit = false;
     shm_ptr->worker_quit = false;
   }else if(current_player == 1){
     player_pos* current_player = &shm_ptr->players[1];
@@ -526,8 +491,7 @@ int main(int argc, char* argv[]){
   refresh();
 
   int key;
-  int running = 1;
-  while(running){
+  while(true){
     if (shm_ptr->creator_quit == 1 || shm_ptr->worker_quit == true || terminate_flag == 1){
       break;
     }
@@ -537,6 +501,7 @@ int main(int argc, char* argv[]){
     }
     
     update_bullets(shm_ptr);
+
     if(player_won){
       clear();
       refresh();
@@ -553,7 +518,7 @@ int main(int argc, char* argv[]){
     
     key = getch();
     if(key != ERR){
-      running = handle_input(key, shm_ptr); 
+      handle_input(key, shm_ptr); 
     }
     
     napms(20);
@@ -563,25 +528,6 @@ int main(int argc, char* argv[]){
   int final_plyr2HP = shm_ptr->plyr2HP;
   char final_plyr1 = shm_ptr->plyr1;
   char final_plyr2 = shm_ptr->plyr2;
-
-  if (current_player == 1){
-    if(terminate_flag){
-      int old_x = shm_ptr->players[1].x;
-      int old_y = shm_ptr->players[1].y;
-      int old_index = COLUMNS * old_x + old_y;
-
-      if (old_x >= 0 && old_x < ROWS && old_y >= 0 && old_y < COLUMNS) {
-        if(sem_wait(&(shm_ptr->cell_semaphores[old_index])) != -1){
-            shm_ptr->tabla[old_index] = ' '; 
-            sem_post(&(shm_ptr->cell_semaphores[old_index]));
-        }
-      }
-
-      shm_ptr->plyr2 = ' ';
-      shm_ptr->plyr2HP = 100;
-      shm_ptr->both_players_online = false;
-    }
-  }
 
   curs_set(1);
   endwin();
