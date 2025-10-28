@@ -1,4 +1,0 @@
-de protejat linia 359 acces global ptr creator iese dupa if
-worker poate accesa tabla neinitializata
-exituri bruste la update_bullets fara eliberare resurse
-flaguri creator_worker quit

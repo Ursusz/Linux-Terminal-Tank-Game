@@ -22,6 +22,8 @@
  de accesarea simultana prin semafoare. Interfata va fi ncurses.
 */
 
+sem_t *init_sem = NULL;
+
 struct{
   int last_direction;
 } player_stats[2] = {{-1}, {-1}};
@@ -129,6 +131,10 @@ void init_keys(shared_matrix_t* shm_ptr){
 void move_player(int direction, shared_matrix_t* shm_ptr, int player_id){
   int old_x = shm_ptr->players[player_id].x;
   int old_y = shm_ptr->players[player_id].y;
+
+  if (old_x < 0 || old_x >= ROWS || old_y < 0 || old_y >= COLUMNS) {
+    return;
+  }
 
   int new_x = old_x;
   int new_y = old_y;
@@ -389,6 +395,7 @@ void player_fire(shared_matrix_t* shm_ptr, int player_id){
       args->both_players = shm_ptr->both_players_online;
       
       if (pthread_create(&curr_bullet->thread_id, NULL, bullet_thread, args) != 0) {
+        perror("Failed to create bullet thread");
         free(args);
         curr_bullet->available = true;
         curr_bullet->active = false;
@@ -466,15 +473,20 @@ void cleanup_and_exit(shared_matrix_t* shm_ptr, size_t shm_size, int is_creator,
     if (shm_unlink(SHM_NAME) == -1) {
       perror("shm_unlink failed during cleanup");
     }
+    if(sem_unlink(INIT_SEM_NAME) == -1){
+      perror("sem_unlink failed during cleanup");
+    }
   }
+
+  sem_close(init_sem);
   
   exit(exit_code);
 }
 
 void signal_handler(int signum){
-  if (signum == SIGINT) {
-    terminate_flag = 1;
-  }
+  if (signum == SIGINT || signum == SIGTERM) {
+        terminate_flag = 1;
+    }
 }
 
 int main(int argc, char* argv[]){
@@ -493,15 +505,13 @@ int main(int argc, char* argv[]){
   int fd;
   shared_matrix_t *shm_ptr;
   size_t shm_size = sizeof(shared_matrix_t);
-
-  sem_t *init_sem = NULL; // semafor pentru verificare memorie partajata initializata
+ 
+  if (signal(SIGTERM, signal_handler) == SIG_ERR) {
+    fprintf(stderr, "Eroare la setarea signal handler-ului pentru SIGTERM.\n");
+    exit(EXIT_FAILURE);
+  }
 
   if (current_player == 0){
-    if(signal(SIGINT, signal_handler) == SIG_ERR){
-      fprintf(stderr, "Eroare la setarea signal handler-ului.\n");
-      exit(EXIT_FAILURE);
-    }
-
     // creez zona mem partajata -> 0666 permisiuni (Ignorat, owner, grup, altii) -> 6 (citire 4, scriere 2, executare 0)
     fd = shm_open(SHM_NAME, O_CREAT | O_EXCL | O_RDWR, 0666);
     if (fd == -1){
@@ -514,12 +524,7 @@ int main(int argc, char* argv[]){
       exit(EXIT_FAILURE);
     }
     printf("Creator -> segmentul de memorie a fost creat\n");
-  }else if (current_player == 1){
-    if(signal(SIGINT, signal_handler) == SIG_ERR){
-      fprintf(stderr, "Eroare la setarea signal handler-ului.\n");
-      exit(EXIT_FAILURE);
-    }
-    
+  }else if (current_player == 1){   
     fd = shm_open(SHM_NAME, O_RDWR, 0666);
     if (fd == -1){
       fprintf(stderr, "Eroare shm_open worker | Rulati prima data procesul creator (jucatorul 0)\n");
@@ -542,14 +547,6 @@ int main(int argc, char* argv[]){
   int offset_x = 2; // offset pentru pozitionare jucatori pe tabla
   int offset_y = 2; 
   if (current_player == 0){
-    init_sem = sem_open(INIT_SEM_NAME, O_CREAT | O_EXCL, 0666, 0);
-    if (init_sem == SEM_FAILED) {
-      fprintf(stderr, "Eroare sem_open creator. Un alt joc ruleaza.\n");
-      perror("sem_open");
-      shm_unlink(SHM_NAME);
-      cleanup_and_exit(shm_ptr, shm_size, current_player == 0, EXIT_SUCCESS, true);
-    }
-
     initializare_semafoare(shm_ptr);
     
     shm_ptr->board_initialized = false;
@@ -585,28 +582,22 @@ int main(int argc, char* argv[]){
     shm_ptr->board_initialized = true;
     sem_post(&shm_ptr->status_sem);
 
-    if (sem_post(init_sem) == -1) {
-        perror("sem_post init_sem creator");
+    init_sem = sem_open(INIT_SEM_NAME, O_CREAT | O_EXCL, 0666, 0);
+    if (init_sem == SEM_FAILED) {
+      fprintf(stderr, "Eroare sem_open creator. Un alt joc ruleaza.\n");
+      perror("sem_open");
+      shm_unlink(SHM_NAME);
+      cleanup_and_exit(shm_ptr, shm_size, current_player == 0, EXIT_SUCCESS, true);
     }
-
-    sem_close(init_sem);
   }else if(current_player == 1){
-    sem_t *init_sem_worker;
-
-    init_sem_worker = sem_open(INIT_SEM_NAME, 0);
-    if (init_sem_worker == SEM_FAILED) {
+    
+    init_sem = sem_open(INIT_SEM_NAME, 0);
+    if (init_sem == SEM_FAILED) {
         fprintf(stderr, "Eroare sem_open worker.\n");
         munmap(shm_ptr, shm_size);
         cleanup_and_exit(shm_ptr, shm_size, current_player == 1, EXIT_FAILURE, true);
     }
-
-    if (sem_wait(init_sem_worker) == -1) {
-        sem_close(init_sem_worker);
-        munmap(shm_ptr, shm_size);
-        cleanup_and_exit(shm_ptr, shm_size, current_player == 1, EXIT_FAILURE, true);
-    }
-
-    sem_close(init_sem_worker);
+    sem_close(init_sem);
     
     if(terminate_flag){
       fprintf(stderr, "Worker-ul a fost intrerupt inainte de initializarea tablei.\n");
@@ -721,8 +712,6 @@ int main(int argc, char* argv[]){
       shm_ptr->bullets[i].available = true;
     }
   }
-
-  usleep(100000);
   
   sem_wait(&shm_ptr->status_sem);
   bool creator_has_quit = shm_ptr->creator_quit;
@@ -756,11 +745,7 @@ int main(int argc, char* argv[]){
   }
 
   if(current_player == 0){
-    if(shm_unlink(SHM_NAME) == -1){
-      perror("Eroare shm_unlink creator");
-    } else {
-      printf("Creator -> segmentul de memorie a fost sters\n");
-    }
+    cleanup_and_exit(shm_ptr, shm_size, current_player == 0, EXIT_SUCCESS, true);
   }
   return 0;
 }
